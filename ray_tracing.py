@@ -19,10 +19,37 @@ SOFTWARE.
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-w = 640
-h = 360
+
+class Settings:
+    w = 400
+    h = 200
+
+    # List of objects.
+    color_plane0 = 1. * np.ones(3)
+    color_plane1 = 0. * np.ones(3)
+
+    # Light position and color.
+    L = np.array([5., 5., -10.])
+    color_light = np.ones(3)
+
+    # Default light and material parameters.
+    ambient = .05
+    diffuse_c = 1.
+    specular_c = 1.
+    specular_k = 50
+
+    depth_max = 5  # Maximum number of light reflections.
+
+    col = np.zeros(3)  # Current color.
+    O = np.array([0., 0.35, -1.])  # Camera.
+    Q = np.array([0., 0., 0.])  # Camera pointing to.
+
+    r = float(w) / h
+    # Screen coordinates: x0, y0, x1, y1.
+    S = (-1., -1. / r + .25, 1., 1. / r + .25)
+
+    scene = None
 
 
 def normalize(x):
@@ -89,7 +116,7 @@ def get_color(obj, M):
 def trace_ray(rayO, rayD):
     # Find first point of intersection with the scene.
     t = np.inf
-    for i, obj in enumerate(scene):
+    for i, obj in enumerate(Settings.scene):
         t_obj = intersect(rayO, rayD, obj)
         if t_obj < t:
             t, obj_idx = t_obj, i
@@ -97,25 +124,31 @@ def trace_ray(rayO, rayD):
     if t == np.inf:
         return
     # Find the object.
-    obj = scene[obj_idx]
+    obj = Settings.scene[obj_idx]
     # Find the point of intersection on the object.
     M = rayO + rayD * t
     # Find properties of the object.
     N = get_normal(obj, M)
     color = get_color(obj, M)
-    toL = normalize(L - M)
-    toO = normalize(O - M)
+    toL = normalize(Settings.L - M)
+    toO = normalize(Settings.O - M)
     # Shadow: find if the point is shadowed or not.
-    l = [intersect(M + N * .0001, toL, obj_sh)
-         for k, obj_sh in enumerate(scene) if k != obj_idx]
-    if l and min(l) < np.inf:
-        return
+    shadow_coef = 1.
+    l = [(intersect(M + N * .0001, toL, obj_sh), k)
+         for k, obj_sh in enumerate(Settings.scene) if k != obj_idx]
+    if l:
+        for sh_int in l:
+            if sh_int[0] < np.inf:
+                sh_obj = Settings.scene[sh_int[1]]
+                shadow_coef *= sh_obj.get('transparency', 0.)
     # Start computing the color.
-    col_ray = ambient
+    col_ray = Settings.ambient
     # Lambert shading (diffuse).
-    col_ray += obj.get('diffuse_c', diffuse_c) * max(np.dot(N, toL), 0) * color
+    col_ray += obj.get('diffuse_c', Settings.diffuse_c) * max(np.dot(N, toL), 0) * color
     # Blinn-Phong shading (specular).
-    col_ray += obj.get('specular_c', specular_c) * max(np.dot(N, normalize(toL + toO)), 0) ** specular_k * color_light
+    col_ray += obj.get('specular_c', Settings.specular_c) * max(np.dot(N, normalize(toL + toO)),
+                                                                0) ** Settings.specular_k * Settings.color_light
+    col_ray *= shadow_coef
     return obj, M, N, col_ray
 
 
@@ -131,8 +164,8 @@ def add_plane(position, normal,
               diffuse_c=.75, specular_c=.5, reflection=.25):
     return dict(type='plane', position=np.array(position),
                 normal=np.array(normal),
-                color=lambda M: (color_plane0
-                                 if (int(M[0] * 2) % 2) == (int(M[2] * 2) % 2) else color_plane1),
+                color=lambda M: (Settings.color_plane0
+                                 if (int(M[0] * 2) % 2) == (int(M[2] * 2) % 2) else Settings.color_plane1),
                 diffuse_c=diffuse_c, specular_c=specular_c, reflection=reflection)
 
 
@@ -149,7 +182,7 @@ def refract_ray(vect, n, coeff):
 
 
 def process_tracing(rayO, rayD, reflection, col, depth, refraction):
-    if depth >= depth_max:
+    if depth >= Settings.depth_max:
         return
 
     after_trace = trace_ray(rayO, rayD)
@@ -157,7 +190,7 @@ def process_tracing(rayO, rayD, reflection, col, depth, refraction):
         return
 
     obj, M, N, col_ray = after_trace
-    col += reflection * col_ray
+    col += reflection * (1 - obj.get('transparency', 0.)) * col_ray
 
     # Reflection
     rayO1, rayD1 = M + N * refraction * .0001, normalize(rayD - 2 * np.dot(rayD, N) * N)
@@ -175,49 +208,32 @@ def process_tracing(rayO, rayD, reflection, col, depth, refraction):
     return
 
 
-# List of objects.
-color_plane0 = 1. * np.ones(3)
-color_plane1 = 0. * np.ones(3)
-scene = [add_sphere([.75, .1, 1.], .6, [0., 0., 1.], transparency=1, refraction=1),  # blue
-         add_sphere([-.75, .1, 2.25], .6, [.5, .223, .5], transparency=0.5, refraction=1.5),  # pink
-         add_sphere([-2.75, .1, 3.5], .6, [1., .572, .184], transparency=0.1, refraction=0.5),  # orange
-         add_plane([0., -.5, 0.], [0., 1., 0.]),
-         ]
+def do_refraction(scene):
+    Settings.scene = scene
 
-# Light position and color.
-L = np.array([5., 5., -10.])
-color_light = np.ones(3)
+    w = Settings.w
+    h = Settings.h
 
-# Default light and material parameters.
-ambient = .05
-diffuse_c = 1.
-specular_c = 1.
-specular_k = 50
+    img = np.zeros((h, w, 3))
 
-depth_max = 5  # Maximum number of light reflections.
-col = np.zeros(3)  # Current color.
-O = np.array([0., 0.35, -1.])  # Camera.
-Q = np.array([0., 0., 0.])  # Camera pointing to.
-img = np.zeros((h, w, 3))
+    # Loop through all pixels.
+    for i, x in enumerate(np.linspace(Settings.S[0], Settings.S[2], w)):
+        if i % 10 == 0:
+            print(i / float(w) * 100, "%")
 
-r = float(w) / h
-# Screen coordinates: x0, y0, x1, y1.
-S = (-1., -1. / r + .25, 1., 1. / r + .25)
+        for j, y in enumerate(np.linspace(Settings.S[1], Settings.S[3], h)):
+            Settings.col[:] = 0
+            Settings.Q[:2] = (x, y)
+            D = normalize(Settings.Q - Settings.O)
+            depth = 0
+            rayO, rayD = Settings.O, D
+            reflection = 1.
+            refraction = 1
+            process_tracing(rayO, rayD, reflection, Settings.col, depth, refraction)
+            img[h - j - 1, i, :] = np.clip(Settings.col, 0, 1)
 
-# Loop through all pixels.
-for i, x in enumerate(np.linspace(S[0], S[2], w)):
-    if i % 10 == 0:
-        print(i / float(w) * 100, "%")
+    return img
 
-    for j, y in enumerate(np.linspace(S[1], S[3], h)):
-        col[:] = 0
-        Q[:2] = (x, y)
-        D = normalize(Q - O)
-        depth = 0
-        rayO, rayD = O, D
-        reflection = 1.
-        refraction = 1
-        process_tracing(rayO, rayD, reflection, col, depth, refraction)
-        img[h - j - 1, i, :] = np.clip(col, 0, 1)
 
-plt.imsave('refraction_result.png', img)
+if __name__ == '__main__':
+    pass
